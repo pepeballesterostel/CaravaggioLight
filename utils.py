@@ -14,7 +14,9 @@ from scipy.interpolate import splprep, splev
 import json
 from matplotlib.patches import Wedge
 import tempfile
-
+from scipy.ndimage import sobel
+from scipy.interpolate import RegularGridInterpolator
+from scipy.optimize import curve_fit
 
 def load_image_and_masks(parent_dir, img_filename, mask_filenames):
     img_path = os.path.join(parent_dir, img_filename)
@@ -342,7 +344,8 @@ def plot_contour_and_normals(img_path, new_points_x, new_points_y, normals):
     fig, ax = plt.subplots()
     ax.imshow(cv2.cvtColor(org_img, cv2.COLOR_BGR2RGB))
     ax.scatter(new_points_x, new_points_y, color='red', label='Subpixel Groundtruth', s=2)
-    num_normals_to_plot = int(0.1 * len(normals))
+    # num_normals_to_plot = int(0.1 * len(normals))
+    num_normals_to_plot = len(normals)
     for i in np.linspace(0, len(normals) - 1, num=num_normals_to_plot).astype(int):
         ax.arrow(new_points_x[i], new_points_y[i], normals[i, 0] * 50, normals[i, 1] * 50, color='skyblue', head_width=1)
     ax.axis('off')
@@ -461,14 +464,18 @@ def MLE_map(gray_image, contours, probabilities_list, angles_list, x_coordinates
     probability_map = cv2.resize(resized_probability_map, (gray_image.shape[1], gray_image.shape[0]), interpolation=cv2.INTER_LINEAR)
     return probability_map
 
-def vis_MLE_map(img_path, probability_map, directions, x_coordinates, y_coordinates, probabilities_list, angles_list, L_x, L_y, scale = 250, plot_MLE = True, plot_contours_flag = False, plot_only_contours = False):
+def vis_MLE_map(img_path, probability_map, directions, x_coordinates, y_coordinates, probabilities_list, angles_list, L_x, L_y, scale = 250, alpha = 0.7, plot_MLE = True, plot_contours_flag = False, plot_only_contours = False, plot_BW = False):
     fig, ax = plt.subplots()
     # Set the background color to black
     fig.patch.set_facecolor('black')
     ax.set_facecolor('black')
-    org_img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
-    # Adjust the axes to display the entire plot with a black background and set image opacity
-    ax.imshow(org_img, cmap='gray', alpha=0.6, extent=[0, org_img.shape[1], org_img.shape[0], 0])
+    if plot_BW:
+        # If plot_BW is True, display the image in grayscale
+        org_img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
+        ax.imshow(org_img, cmap='gray', alpha=alpha, extent=[0, org_img.shape[1], org_img.shape[0], 0])
+    org_img = cv2.imread(img_path)
+    org_img = cv2.cvtColor(org_img, cv2.COLOR_BGR2RGB)
+    ax.imshow(org_img, alpha=alpha, extent=[0, org_img.shape[1], org_img.shape[0], 0])
     if plot_only_contours:
         # Plot only the contours if plot_only_contours is True
         for i in range(len(x_coordinates)):
@@ -476,7 +483,7 @@ def vis_MLE_map(img_path, probability_map, directions, x_coordinates, y_coordina
     else:
         if plot_MLE:
             heatmap = ax.imshow(probability_map, cmap='inferno', alpha=0.7, extent=[0, org_img.shape[1], org_img.shape[0], 0])
-            plt.scatter(L_x, L_y, color='red', s=100, marker='x')
+            # plt.scatter(L_x, L_y, color='red', s=100, marker='x')
         if plot_contours_flag:
             for i in range(len(x_coordinates)):
                 ax.plot(x_coordinates[i], y_coordinates[i], '.', markersize=2, color='red')
@@ -1018,10 +1025,6 @@ def compute_light_direction_C(img_path, new_points_x, new_points_y, normals, gro
     # Read the original image for plotting later.
     org_img = cv2.imread(img_path)
     height, width = org_img.shape[:2]
-    img_norm = max(height, width)
-    # (Optional) Normalize contour coordinates if needed.
-    spline_point_x_norm = new_points_x / img_norm
-    spline_point_y_norm = new_points_y / img_norm
     n_total_points = len(new_points_x)
     # Initialize mask: start with all points.
     mask = np.ones(n_total_points, dtype=bool)
@@ -1217,32 +1220,30 @@ def add_contour(painting_id, new_contour_data, json_filepath="C:/Users/pepel/PRO
     for painting in data["paintings"]:
         if painting["painting_id"] == painting_id:
             contours_list = painting["analysis"].get("contours", [])
-            # Assign a new contour_id based on the current length of the list
             new_id = len(contours_list) + 1
             new_contour = {
                 "contour_id": new_id,
-                "contour_coordinates": new_contour_data.get("contour_coordinates", [None, None]),
-                "smoothness": new_contour_data.get("smoothness", None),
-                "Parameter_N": new_contour_data.get("Parameter_N", None),
-                "brightness_range": new_contour_data.get("brightness_range", [None]),
-                "normal_vectors_span": new_contour_data.get("normal_vectors_span", [None]),
-                "contour_type": new_contour_data.get("contour_type", None),
-                "belongs_to_person": new_contour_data.get("belongs_to_person", None),
-                "light_direction_estimation": new_contour_data.get("light_direction_estimation", [None]),
-                "estimation_std_degrees": new_contour_data.get("estimation_std_degrees", [None]),
-                "mean_squared_error": new_contour_data.get("mean_squared_error", [None]),
-                "std_mse": new_contour_data.get("std_mse", [None]),
-                "std_mse_deg": new_contour_data.get("std_mse_deg", [None]),
-                "shading_rate": new_contour_data.get("shading_rate", [None]),
-                "level_of_noise": new_contour_data.get("level_of_noise", [None]),
-                "spherical_harmonics_coeffs": new_contour_data.get("spherical_harmonics_coeffs", [None])
+                "contour_coordinates": new_contour_data["contour_coordinates"],
+                "smoothness": new_contour_data["smoothness"],
+                "Parameter_N": new_contour_data["Parameter_N"],
+                "brightness_range": new_contour_data["brightness_range"],
+                "normal_vectors_span": new_contour_data["normal_vectors_span"],
+                "contour_type": new_contour_data["contour_type"],
+                "belongs_to_person": new_contour_data["belongs_to_person"],
+                "light_direction_estimation": new_contour_data["light_direction_estimation"],
+                "empirical_std_deg": new_contour_data["empirical_std_deg"],
+                "estimation_std_degrees": new_contour_data["estimation_std_degrees"],
+                "std_mse_deg": new_contour_data["std_mse_deg"],
+                "mean_squared_error": new_contour_data["mean_squared_error"],
+                "shading_rate": new_contour_data["shading_rate"],
+                "level_of_noise": new_contour_data["level_of_noise"],
+                "spherical_harmonics_coeffs": new_contour_data["spherical_harmonics_coeffs"]
             }
             contours_list.append(new_contour)
             painting["analysis"]["contours"] = contours_list
             break
     data = convert_ndarray(data)
     safe_write_json(data, json_filepath)
-
 
 def add_remaining_info(painting_id, depicted_light_direction_evidence, number_of_people, global_light_direction_estimation, global_estimation_std_degrees, json_filepath="C:/Users/pepel/PROJECTS/DATA/Caravaggio/caravaggio.json"):
     # 1. Load the master JSON
@@ -1425,13 +1426,16 @@ def vis_light_estimation_C(
     if create_new_figure:
         plt.show()
 
+
 def plot_painting_contours_C(
     painting_id,
     json_filepath,
     img_path,
     scale=250,
     plot_contours_flag=False,
-    plot_only_contours=False
+    plot_only_contours=False,
+    plot_all_contours=True,  # New flag: True -> plot all contours, False -> plot only specific ones
+    contour_ids=None  # List of contour_ids to plot when plot_all_contours is False
 ):
     with open(json_filepath, 'r') as f:
         data = json.load(f)
@@ -1460,7 +1464,15 @@ def plot_painting_contours_C(
         alpha=0.7,
         extent=[0, org_img.shape[1], org_img.shape[0], 0]
     )
-    for contour in contours_list:
+    # Determine which contours to plot
+    if plot_all_contours:
+        selected_contours = contours_list  # Plot all contours
+    else:
+        if contour_ids is None or not isinstance(contour_ids, list):
+            print("Error: When plot_all_contours is False, you must provide a valid list of contour_ids.")
+            return
+        selected_contours = [c for c in contours_list if c.get("contour_id") in contour_ids]
+    for contour in selected_contours:
         smoothness = contour.get("smoothness", None)
         N = contour.get("Parameter_N", None)
         c_coords = contour.get("contour_coordinates", None)
@@ -1473,7 +1485,7 @@ def plot_painting_contours_C(
          empirical_std_deg,
          normals,
          x_coords,
-         y_coords) = process_contour_C(img_path, org_img, c_coords, smoothness, N, sigma = 10)
+         y_coords) = process_contour_C(img_path, org_img, c_coords, smoothness, N, sigma=10)
         vis_light_estimation_C(
             img_path=img_path,
             direction=light_direction_est,
@@ -1488,13 +1500,12 @@ def plot_painting_contours_C(
             create_new_figure=False,
             show_background=False
         )
-    # 5) Adjust axes, no repeated background
+    # Adjust axes, no repeated background
     h, w = org_img.shape
     ax.set_xlim([-0.1 * w, 1.1 * w])
     ax.set_ylim([1.1 * h, -0.1 * h])
     ax.axis('off')
     plt.show()
-
 
 def vis_global_light_estimation_C(img_path, direction, x_coordinates, y_coordinates, angle_std_degs=None, scale=1000, visual_factor = 2.0, plot_Ld=True, plot_contours_flag=False, plot_only_contours=False):
     fig, ax = plt.subplots()
@@ -1800,3 +1811,253 @@ def compute_global_estimation(painting_id, img_path, json_filepath, process_cont
     # Convert from radians to degrees.
     circ_std_deg = np.degrees(circ_std)
     return L, circ_std_deg
+
+
+def rotate_vector(vector, angle):
+    '''
+    to rotate counterclockwise put a negative angle. 
+    '''
+    theta = np.radians(angle) 
+    rotation_matrix = np.array([
+        [np.cos(theta), -np.sin(theta)],
+        [np.sin(theta),  np.cos(theta)]
+    ])
+    return rotation_matrix @ vector
+
+
+def _extrapolate_I0(
+    gray: np.ndarray,
+    px: float, py: float,
+    nx: float, ny: float,
+    *,
+    R_in_px     : float  = 4.0,
+    delta       : float  = 0.25,
+    method      : str    = "erf",
+    poly_degree : int    = 2,
+    amplitude_min: float = 3.0
+) -> tuple[float, np.ndarray, np.ndarray]:
+    """
+    Sample gray[y,x] along the inward normal at (px,py) and extrapolate
+    to s=0.  Returns (I0, s_valid, I_valid).
+    """
+    # build a fast cubic sampler once per call
+    def _sampler(coords):
+        # coords: (K,2) array of [row, col]
+        rc = np.vstack([coords[:,0], coords[:,1]])
+        return map_coordinates(gray, rc, order=3, mode='reflect')
+    # inward unit normal
+    n_in = np.array([-nx, -ny], dtype=np.float32)
+    # sample positions s ∈ [δ, R]
+    s = np.arange(delta, R_in_px+1e-3, delta, dtype=np.float32)
+    coords = np.column_stack((py + s*n_in[1],  px + s*n_in[0]))  # (y, x)
+    I_samp = _sampler(coords)
+    # keep only valid, sufficiently‐strong edges
+    valid = (~np.isnan(I_samp)) & (np.ptp(I_samp) >= amplitude_min)
+    s_v, I_v = s[valid], I_samp[valid]
+    if len(s_v) < 4:
+        return np.nan, s_v, I_v
+    # now extrapolate to s=0
+    if method == "mean":
+        mask = s_v >= 1.0  
+        I0 = I_v[mask].mean()
+    elif method == "linear":
+        m = s_v <= 1.0
+        coef = np.polyfit(s_v[m], I_v[m], 1)
+        I0 = np.polyval(coef, 0.0)
+    elif method == "robust_poly":
+        # Huber‐weighted polynomial
+        w = np.ones_like(s_v)
+        for _ in range(5):
+            V    = np.vander(s_v, poly_degree+1)
+            coef, *_ = np.linalg.lstsq(V * w[:,None], I_v*w, rcond=None)
+            resid = I_v - V.dot(coef)
+            mad   = np.median(np.abs(resid)) + 1e-6
+            w     = np.minimum(1.0, 1.5 * mad / np.abs(resid))
+        I0 = np.polyval(coef, 0.0)
+    elif method == "erf":
+        # fixed‐sigma error‐function model
+        def erf_step(s_, I_in, dI):
+            σ = 0.6
+            return I_in - 0.5*dI*(1 + erf((-s_)/(sqrt(2)*σ))) # -s because of the direction of normal sampling is inwards!
+        try:
+            p0 = (I_v.max(), I_v.ptp())
+            popt, _ = curve_fit(erf_step, s_v, I_v,
+                                p0=p0,
+                                bounds=([0,0], [255,255]),
+                                maxfev=200)
+            I0 = popt[0]
+            # print(f"Extrapolated I0 = {I0:.2f} using erf method with parameters: {popt}")
+        except RuntimeError:
+            # print("Curve fitting failed, using mean instead.")
+            I0 = I_v.mean()
+    else:
+        raise ValueError(f"Unknown method {method!r}")
+    return float(I0), s_v, I_v
+
+def sanity_check_luminance(
+    gray_image: np.ndarray,
+    x: np.ndarray,
+    y: np.ndarray,
+    normals: np.ndarray,
+    idx: int,
+    *,
+    R_in_px      = 4.0,
+    delta        = 0.25,
+    method       = "erf",
+    poly_degree  = 2,
+    amplitude_min= 3.0,
+    figsize      = (8,4)
+) -> plt.Figure:
+    # normalize image for display
+    gray = gray_image.astype(np.float32)
+    # pick out this vertex
+    px, py        = new_points_x[idx], new_points_y[idx]
+    nx, ny        = normals[idx]
+    # call the shared helper
+    I0_chk, s_v, I_v = _extrapolate_I0(gray, px, py, nx, ny, R_in_px= R_in_px,delta = delta,method= method,poly_degree = poly_degree,amplitude_min = amplitude_min)
+    fig, (ax0, ax1) = plt.subplots(1, 2, figsize=figsize)
+    ax0.imshow(gray, cmap='gray', origin='upper')
+    ax0.scatter(px, py, c='r', s=50, label='vertex')
+    # plot inward‐sample points
+    n_in = np.array([-nx, -ny], dtype=np.float32)
+    coords = np.column_stack((py + s_v*n_in[1],
+                                px + s_v*n_in[0]))
+    ax0.scatter(coords[:,1], coords[:,0], c='c', s=20, label='samples')
+    ax0.set_title(f'Index|Luminance: #{idx} = {I0_chk:.2f}')
+    ax0.legend(fontsize=8, loc='lower left')
+    ax1.plot(s_v, I_v, 'ko', ms=5, label='samples')
+    ax1.axhline(I0_chk, color='r', lw=2, label='I₀ (extrapolated)')
+    ax1.set_xlabel('distance s (px, inward)')
+    ax1.set_ylabel('luminance')
+    ax1.set_title('Profile & I(0)')
+    ax1.invert_xaxis()
+    ax1.legend(fontsize=8)
+    plt.tight_layout()
+    return fig
+
+
+def _isodata_threshold(img: np.ndarray, *, eps: float = .5, max_iter: int = 40):
+    """Return a global threshold T that separates the histogram into two modes."""
+    t = img.mean()                                   # initial guess
+    for _ in range(max_iter):
+        g1 = img[img <= t]
+        g2 = img[img >  t]
+        new_t = 0.5 * (g1.mean() + g2.mean())
+        if abs(new_t - t) < eps:
+            break
+        t = new_t
+    return t
+
+# -----------------------------------------------------------------------------#
+#  PLOT THE CONTOUR EXTRACTION METHOD BY PIXEL            #
+# -----------------------------------------------------------------------------#
+def plot_true_contour(
+        gray_image: np.ndarray,
+        x: np.ndarray,
+        y: np.ndarray,
+        normals: np.ndarray,
+        N: int,
+        point_idx: int,
+        *,
+        delta: float = 0.25,
+        R_px: float | None = None
+    ) -> tuple[float, float]:
+    """
+    • Uses the **Sobel gradient magnitude** instead of raw luminance
+    • Fits a *Gaussian peak* (blurred edge model of Tarel & al., 2010; Steger, 1998)
+    • Returns the sub‑pixel edge position and shows every processing step
+    """
+    # ------------------------------------------------------------------ #
+    # 0.  gradient image + coarse edge map                               #
+    # ------------------------------------------------------------------ #
+    gx = sobel(gray_image.astype(np.float32), axis=1, mode='reflect')
+    gy = sobel(gray_image.astype(np.float32), axis=0, mode='reflect')
+    grad = np.hypot(gx, gy)                          # gradient magnitude
+    T  = _isodata_threshold(grad)                    # global threshold
+    coarse_edge = grad > T                           # boolean mask
+    # continuous access to both gray & gradient images
+    interp_grad = RegularGridInterpolator(
+        (np.arange(grad.shape[0], dtype=np.float32),
+         np.arange(grad.shape[1], dtype=np.float32)),
+        grad, bounds_error=False, fill_value=np.nan
+    )
+    # ------------------------------------------------------------------ #
+    # 1.  geometry                                                       #
+    # ------------------------------------------------------------------ #
+    p0 = np.asarray([x[point_idx], y[point_idx]], dtype=np.float32)  # (x,y)
+    n  = normals[point_idx].astype(np.float32)
+    if R_px is None:
+        R_px = min(3.0, float(N))
+    R_px = float(min(R_px, N))
+    # ------------------------------------------------------------------ #
+    # 2.  sample the Sobel gradient along the normal                     #
+    # ------------------------------------------------------------------ #
+    s  = np.arange(-R_px, R_px + 1e-3, delta, dtype=np.float32)
+    rc = np.column_stack((p0[1] - s*n[1],   # rows  y
+                          p0[0] - s*n[0]))  # cols  x
+    g_vals = interp_grad(rc)
+    valid = ~np.isnan(g_vals)
+    s, g_vals = s[valid], g_vals[valid]
+    # ------------------------------------------------------------------ #
+    # 3.  initial peak estimate (coarse sub‑pixel)                       #
+    # ------------------------------------------------------------------ #
+    k_max  = np.argmax(g_vals)
+    if 0 < k_max < len(s)-1:
+        # quadratic interpolation of the maximum
+        num   = (g_vals[k_max-1] - g_vals[k_max+1]) * delta
+        denom = 2*(g_vals[k_max-1] - 2*g_vals[k_max] + g_vals[k_max+1])
+        s0_hat = s[k_max] + (num / denom) if denom != 0 else s[k_max]
+    else:
+        s0_hat = s[k_max]
+    # ------------------------------------------------------------------ #
+    # 4.  Gaussian peak fit                                              #
+    #      g(s) = B + A * exp(- (s-s0)^2 / (2 σ^2))                      #
+    # ------------------------------------------------------------------ #
+    def gauss_peak(s_, A, s0, sigma, B):
+        return B + A * np.exp(- (s_ - s0)**2 / (2*sigma**2))
+    p_init = (g_vals[k_max] - np.median(g_vals),  # A
+              s0_hat,                             # s0
+              0.8,                                # σ  (px)
+              np.median(g_vals))                  # B
+    try:
+        (A, s0, sigma, B), _ = curve_fit(
+            gauss_peak, s, g_vals, p0=p_init,
+            bounds=([-np.inf, -R_px, 0.3, 0.0],
+                    [ np.inf,  R_px, 3.0, np.inf]),
+            maxfev=400
+        )
+    except RuntimeError:
+        s0 = 0.0                                  # fallback – keep p0
+    # ------------------------------------------------------------------ #
+    # 5.  sub‑pixel update                                               #
+    # ------------------------------------------------------------------ #
+    p_new = p0 - s0 * n
+    new_x, new_y = float(p_new[0]), float(p_new[1])
+    # ------------------------------------------------------------------ #
+    # 6.  visualisation                                                  #
+    # ------------------------------------------------------------------ #
+    fig = plt.figure(figsize=(14, 5))
+    # left pane – image, coarse edge & sampling line
+    ax0 = fig.add_subplot(1, 2, 1)
+    ax0.imshow(gray_image)
+    ax0.contour(coarse_edge, levels=[0.5], colors='cyan', linewidths=0.5,
+                alpha=.6, linestyles='dashed', antialiased=True)
+    ax0.plot(rc[:,1], rc[:,0], 'b.', ms=3, label='Gradient samples')
+    ax0.scatter(p0[0], p0[1], c='orange', s=40, label='Initial point')
+    ax0.scatter(new_x, new_y, c='lime',   s=40, label='Sub‑pixel point')
+    ax0.set_title('Spatial domain (cyan = coarse edge)')
+    ax0.legend(fontsize=7)
+    # right pane – gradient profile & Gaussian fit
+    ax1 = fig.add_subplot(1, 2, 2)
+    ax1.plot(s, g_vals, 'k.-', label='Sobel |∇L| samples')
+    ss  = np.linspace(s.min(), s.max(), 600)
+    ax1.plot(ss, gauss_peak(ss, A, s0, sigma, B),
+             'r', label='Gaussian fit')
+    ax1.axvline(0,  color='orange', ls='--', label='Initial')
+    ax1.axvline(s0, color='lime',   ls='--', label='Optimised')
+    ax1.set_xlabel('Signed distance $s$  (px)')
+    ax1.set_ylabel('Sobel gradient magnitude')
+    ax1.set_title('1‑D profile along normal')
+    ax1.legend(fontsize=7)
+    plt.tight_layout()
+    plt.show()
