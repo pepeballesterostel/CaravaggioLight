@@ -275,11 +275,14 @@ def plot_contour_and_normals(
         y = np.asarray(y_in, dtype=np.float32)
         N = np.asarray(normals_in, dtype=np.float32)
     # ---- 2. load & display image ---------------------------------------
-    img = cv2.imread(img_path)
-    if img is None:
-        raise FileNotFoundError(img_path)
+    # img = cv2.imread(img_path)
+    # if img is None:
+    #     raise FileNotFoundError(img_path)
     fig, ax = plt.subplots(figsize=(8, 8))
-    ax.imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+    img_arr = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
+    h, w = img_arr.shape
+    ax.imshow(img_arr, cmap='gray', alpha=1, extent=[0, w, h, 0])
+    # ax.imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
     ax.scatter(x, y, c='red', s=point_size, label='Contour pts')
     # ---- 3. draw every normal as an arrow ------------------------------
     for xi, yi, (nx, ny) in zip(x, y, N):
@@ -1159,7 +1162,7 @@ def vis_contour_light_estimations(data, painting_id, img_path,
             continue
         dx, dy = maybe
         # place arrow at center of first segment
-        first_seg = raw[0]
+        first_seg = raw[0] if len(raw) > 1 else raw[0]
         if isinstance(first_seg[0], (list, tuple)):
             coords0 = np.array(first_seg, dtype=float)
         else:
@@ -1210,3 +1213,73 @@ def order_json_ids(json_filepath = "C:/Users/pepel/PROJECTS/DATA/Caravaggio/cara
         print(f"Painting_id={painting_id}: reassigned {len(contours_list)} contours IDs from 1 to {len(contours_list)}.")
     with open(json_filepath, 'w') as f:
         json.dump(data, f, indent=2)
+
+
+def plot_single_contour_light(
+    img,
+    contour_segments,
+    light_direction,
+    std_deg,
+    scale=700,
+    uncertainty_factor=1.0,
+    contour_color='green',
+    arrow_color='yellow',
+    bg='white',
+    save_fig=False,
+    fig_name='contour_light.png'
+):
+    # — load/prepare image —
+    if isinstance(img, str):
+        img_arr = cv2.imread(img, cv2.IMREAD_GRAYSCALE)
+        if img_arr is None:
+            raise ValueError(f"Cannot load image at {img}")
+    else:
+        img_arr = img.copy()
+        if img_arr.ndim == 3:
+            img_arr = cv2.cvtColor(img_arr, cv2.COLOR_BGR2GRAY)
+    h, w = img_arr.shape
+    # — compute centroid over all segments —
+    all_pts = np.vstack(contour_segments[0])
+    cx, cy = all_pts.mean(axis=0)
+    # — set up figure —
+    fig, ax = plt.subplots(figsize=(6,6))
+    fig.patch.set_facecolor(bg)
+    ax.set_facecolor(bg)
+    ax.imshow(img_arr, cmap='gray', alpha=1, extent=[0, w, h, 0])
+    # — plot each segment in green —
+    for seg in contour_segments:
+        seg = np.asarray(seg, dtype=float)
+        ax.plot(seg[:,0], seg[:,1], '-', color=contour_color, linewidth=3)
+    # — draw the arrow for the estimated light direction —
+    dx, dy = light_direction
+    ax.arrow(
+        cx, cy,
+        dx*scale, dy*scale,            # invert dy for image coords
+        head_width=30, head_length=30, width=12,
+        length_includes_head=True,
+        fc=arrow_color, ec=arrow_color, zorder=4
+    )
+    # — draw the uncertainty wedge centered at the arrow origin,
+    #    aligned with the arrow’s direction —
+    # use flipped dy to match arrow orientation
+    angle = (np.degrees(np.arctan2(dy, dx)) + 360) % 360
+    delta = std_deg * uncertainty_factor
+    wedge = Wedge(
+        (cx, cy),       # same origin as arrow
+        scale,          # radius matches arrow length
+        angle - delta,
+        angle + delta,
+        color=arrow_color,
+        alpha=0.2,
+        zorder=4
+    )
+    ax.add_patch(wedge)
+    # — finalize —
+    ax.set_xlim(-0.05*w, 1.05*w)
+    ax.set_ylim(1.05*h, -0.05*h)
+    ax.axis('off')
+    plt.tight_layout()
+    if save_fig:
+        fig.savefig(fig_name, dpi=300, bbox_inches='tight')
+        print(f"Saved figure to {fig_name}")
+    plt.show()
