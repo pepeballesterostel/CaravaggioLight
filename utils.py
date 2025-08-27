@@ -17,6 +17,12 @@ import tempfile
 from scipy.ndimage import sobel
 from scipy.interpolate import RegularGridInterpolator
 from scipy.optimize import curve_fit
+from matplotlib import colormaps
+from scipy.ndimage import map_coordinates
+from scipy.special import erf
+from math import sqrt
+
+
 
 def load_image_and_masks(parent_dir, img_filename, mask_filenames):
     img_path = os.path.join(parent_dir, img_filename)
@@ -377,7 +383,7 @@ def get_Lightdirection_pdf(light_direction_estimations, ground_truths, normals_l
             light_dir = np.array([np.cos(theta), np.sin(theta)])
             light_dir = light_dir / np.linalg.norm(light_dir)  # Ensure the light direction vector is normalized
             # Calculate luminance at this light direction
-            expected_luminance[j] = [max(0, np.dot(normals[k], light_dir)) for k in range(len(normals))]
+            expected_luminance[j] = [max(0.0, float(np.dot(normals[k], light_dir))) for k in range(len(normals))]
             # Calculate MSE between measured luminance and calculated
             mse_values[j] = np.mean((ground_truth - expected_luminance[j])**2)
         # Gaussian distribution
@@ -415,7 +421,7 @@ def get_Lightdirection_pdf(light_direction_estimations, ground_truths, normals_l
             circular_std_deg = np.degrees(circular_std_rad) # this measures the error in angle space
     return probabilities_list, angles_list, variances_list, round(sigma, 4), round(circular_std_deg, 4)
 
-def MLE_map(gray_image, contours, probabilities_list, angles_list, x_coordinates, y_coordinates, resize_factor = 0.1, use_priors=False, combined_weights=None):
+def MLE_map(gray_image, probabilities_list, angles_list, x_coordinates, y_coordinates, resize_factor = 0.1, use_priors=False, combined_weights=None):
     '''
     The resize_factor is used to reduce computation. We process the MLE map per pixel in a lower resolution and then resize to the original image size.
     We just use the gray_image for dimensions.
@@ -427,7 +433,7 @@ def MLE_map(gray_image, contours, probabilities_list, angles_list, x_coordinates
     # Scaling factors to map back to the original image
     scale_x = gray_image.shape[1] / new_width
     scale_y = gray_image.shape[0] / new_height
-    for i, contour in enumerate(contours):
+    for i in range(len(probabilities_list)):
         probabilities = probabilities_list[i]
         direction_angles = angles_list[i]
         # Midpoint of the contour
@@ -873,153 +879,8 @@ def D(w1, w2):
     """
     return 0.5 * (1 - corr(w1, w2))
 
-def extract_light_direction_ui(image_path):
-    '''
-    This function allows a user to interactively select two points on an image 
-    and then returns the normalized vector (direction) from the first point to the second. 
-    '''
-    # Load the image using OpenCV
-    img = cv2.cvtColor(cv2.imread(image_path), cv2.COLOR_BGR2RGB)
-    # Display the image with matplotlib to allow zooming and point selection
-    fig, ax = plt.subplots()
-    ax.imshow(img)
-    plt.title("Press 'z' to zoom, 'p' to select points")
-    points = []
-    mode = 'zoom'  # Start in zoom mode by default
-    def on_key(event):
-        nonlocal mode
-        if event.key == 'z':
-            mode = 'zoom'
-            plt.title("Zoom Mode: Press 'p' to switch to Point Selection Mode")
-            fig.canvas.draw()
-        elif event.key == 'p':
-            mode = 'point'
-            plt.title("Point Selection Mode: Click to select points, Press 'z' to switch to Zoom Mode")
-            fig.canvas.draw()
-    def onclick(event):
-        if mode == 'point' and event.xdata is not None and event.ydata is not None:
-            points.append((event.xdata, event.ydata))
-            ax.plot(event.xdata, event.ydata, 'ro')  # Plot the selected point
-            fig.canvas.draw()
-            if len(points) == 2:
-                plt.close()  # Close the plot once 2 points are selected
-    fig.canvas.mpl_connect('key_press_event', on_key)
-    fig.canvas.mpl_connect('button_press_event', onclick)
-    plt.show()
-    # Ensure two points have been selected
-    if len(points) != 2:
-        raise ValueError("Two points were not selected. Please try again.")
-    # Calculate the direction vector from point 1 to point 2
-    p1 = np.array(points[0])
-    p2 = np.array(points[1])
-    direction_vector = p2 - p1
-    # Normalize the direction vector
-    norm = np.linalg.norm(direction_vector)
-    if norm == 0:
-        raise ValueError("The two points selected are identical, resulting in a zero-length direction vector.")
-    normalized_direction_vector = direction_vector / norm
-    return normalized_direction_vector
 
 
-def extract_contour_ui(image_rgb):
-    instructions = """
-    Instructions:
-    1. Press 'p' to enter point selection mode.
-    2. Press 'z' to enter zoom mode.
-    3. Press 'f' to finalize the current contour.
-    4. Press 'u' to undo the last point.
-    5. Press 'r' to remove the last contour.
-    6. Press 'h' for help.
-    7. Press 'q' to quit.
-    """
-    # Global variables to store contours and mode
-    contours = []  # List to store all contours
-    current_contour = []  # Points in the current contour
-    mode = 'zoom'  # Start in zoom mode
-    xlim, ylim = None, None  # To preserve zoom state
-    text_box = None  # For help instructions display
-    help_visible = False  # Track if help is visible
-    fig, ax = plt.subplots()
-    ax.imshow(image_rgb)
-    ax.axis('off')  
-    # Instructions for the user
-    def toggle_instructions():
-        nonlocal  text_box, help_visible
-        if help_visible:
-            if text_box:
-                text_box.remove() 
-            help_visible = False
-        else:
-            text_box = plt.text(0.05, 0.95, instructions, transform=ax.transAxes, fontsize=8,
-                                verticalalignment='top', bbox=dict(facecolor='white', alpha=0.7))
-            help_visible = True
-        plt.draw()
-    def onclick(event):
-        nonlocal  current_contour, mode
-        if mode == 'select' and event.xdata is not None and event.ydata is not None:
-            ix, iy = event.xdata, event.ydata
-            current_contour.append((ix, iy))
-            plt.plot(ix, iy, 'ro', markersize=1)
-            plt.draw()
-        elif mode == 'zoom':
-            pass  # In zoom mode, don't record points
-    def plot_contour(contour):
-        contour = np.array(contour)
-        plt.scatter(contour[:, 0], contour[:, 1], color='r', s=1) 
-        plt.draw()
-    def redraw_image():
-        nonlocal  xlim, ylim
-        xlim = ax.get_xlim()
-        ylim = ax.get_ylim()
-        ax.clear()
-        ax.imshow(image_rgb)
-        ax.axis('off')
-        for contour in contours:
-            plot_contour(contour)
-        for point in current_contour:
-            plt.plot(point[0], point[1], 'ro', markersize=0.1) 
-        ax.set_xlim(xlim)
-        ax.set_ylim(ylim)
-        plt.draw()
-    def onkey(event):
-        nonlocal  mode, current_contour, contours
-        if event.key == 'z':  # Switch to zoom mode
-            mode = 'zoom'
-            print("Switched to zoom mode")
-        elif event.key == 'p':  # Switch to point selection mode
-            mode = 'select'
-            print("Switched to point selection mode")
-        elif event.key == 'f':  # Finalize the current contour
-            if len(current_contour) > 2:
-                contours.append(current_contour.copy())
-                plot_contour(current_contour)
-                current_contour = []  # Reset for a new contour
-                print(f"Contour finalized. Total contours: {len(contours)}")
-            else:
-                print("Not enough points to finalize the contour.")
-        elif event.key == 'u':  # Undo the last point
-            if current_contour:
-                removed_point = current_contour.pop()
-                print(f"Removed point: {removed_point}")
-                redraw_image()
-            else:
-                print("No points to undo.")
-        elif event.key == 'r':  # Remove the last contour
-            if contours:
-                removed_contour = contours.pop()
-                print(f"Removed last contour. Total contours left: {len(contours)}")
-                redraw_image()
-            else:
-                print("No contours to remove.")
-        elif event.key == 'h':  # Show help instructions
-            toggle_instructions()
-        elif event.key == 'q':  # Quit
-            plt.close()
-    # Display image for point selection
-    fig.canvas.mpl_connect('button_press_event', onclick)
-    fig.canvas.mpl_connect('key_press_event', onkey)
-    plt.show()
-    return contours[0]
 
 def compute_light_direction_C(img_path, new_points_x, new_points_y, normals, ground_truth_subpixel, max_iter):
     # Read the original image for plotting later.
@@ -1191,161 +1052,11 @@ def process_contour_C(img_path, gray_image, contour, smoothness, N, sigma = 10):
     empirical_std_deg = compute_empirical_std(img_path, new_points_x, new_points_y, normals, ground_truth_subpixel_smooth, max_iter=10, N_max=3)
     return ground_truth_subpixel, direction, angle_std_degs, empirical_std_deg, normals, new_points_x, new_points_y
 
-def convert_ndarray(obj):
-    """
-    Recursively convert numpy arrays in `obj` to lists
-    so that it becomes JSON-serializable.
-    """
-    if isinstance(obj, dict):
-        return {k: convert_ndarray(v) for k, v in obj.items()}
-    elif isinstance(obj, list):
-        return [convert_ndarray(item) for item in obj]
-    elif isinstance(obj, np.ndarray):
-        return obj.tolist()
-    else:
-        return obj
-
-def safe_write_json(data, json_filepath):
-    # Create a temp file in the same directory
-    dir_name, base_name = os.path.split(json_filepath)
-    with tempfile.NamedTemporaryFile('w', dir=dir_name, delete=False) as tmp:
-        temp_path = tmp.name
-        json.dump(data, tmp, indent=2)
-    # If we reach here, the dump succeeded with no error
-    os.replace(temp_path, json_filepath)  # Overwrite the old file atomically
-
-def add_contour(painting_id, new_contour_data, json_filepath="C:/Users/pepel/PROJECTS/DATA/Caravaggio/caravaggio.json"):
-    with open(json_filepath, 'r') as f:
-        data = json.load(f)
-    for painting in data["paintings"]:
-        if painting["painting_id"] == painting_id:
-            contours_list = painting["analysis"].get("contours", [])
-            new_id = len(contours_list) + 1
-            new_contour = {
-                "contour_id": new_id,
-                "contour_coordinates": new_contour_data["contour_coordinates"],
-                "smoothness": new_contour_data["smoothness"],
-                "Parameter_N": new_contour_data["Parameter_N"],
-                "brightness_range": new_contour_data["brightness_range"],
-                "normal_vectors_span": new_contour_data["normal_vectors_span"],
-                "contour_type": new_contour_data["contour_type"],
-                "belongs_to_person": new_contour_data["belongs_to_person"],
-                "light_direction_estimation": new_contour_data["light_direction_estimation"],
-                "empirical_std_deg": new_contour_data["empirical_std_deg"],
-                "estimation_std_degrees": new_contour_data["estimation_std_degrees"],
-                "std_mse_deg": new_contour_data["std_mse_deg"],
-                "mean_squared_error": new_contour_data["mean_squared_error"],
-                "shading_rate": new_contour_data["shading_rate"],
-                "level_of_noise": new_contour_data["level_of_noise"],
-                "spherical_harmonics_coeffs": new_contour_data["spherical_harmonics_coeffs"]
-            }
-            contours_list.append(new_contour)
-            painting["analysis"]["contours"] = contours_list
-            break
-    data = convert_ndarray(data)
-    safe_write_json(data, json_filepath)
-
-def add_remaining_info(painting_id, depicted_light_direction_evidence, number_of_people, global_light_direction_estimation, global_estimation_std_degrees, json_filepath="C:/Users/pepel/PROJECTS/DATA/Caravaggio/caravaggio.json"):
-    # 1. Load the master JSON
-    with open(json_filepath, 'r') as f:
-        data = json.load(f)
-    # 2. Locate the target painting
-    for painting in data["paintings"]:
-        if painting["painting_id"] == painting_id:
-            painting["analysis"]["depicted_light_direction_evidence"] = depicted_light_direction_evidence
-            painting["analysis"]["num_people"] = number_of_people
-            painting["analysis"]["global_light_direction_estimation"] = global_light_direction_estimation
-            painting["analysis"]["global_estimation_std_degrees"] = global_estimation_std_degrees
-            break
-    data = convert_ndarray(data)
-    safe_write_json(data, json_filepath)
-
-def replace_contour(painting_id: int, contour_id: int, new_contour_data: dict, json_filepath="C:/Users/pepel/PROJECTS/DATA/Caravaggio/caravaggio.json"):
-    """
-    Overwrite the entire contour's data with 'new_contour_data'. The only field we keep from the old contour is the 'contour_id'.
-    """
-    with open(json_filepath, 'r') as f:
-        data = json.load(f)
-    # Locate painting
-    target_painting = None
-    for painting in data["paintings"]:
-        if painting["painting_id"] == painting_id:
-            target_painting = painting
-            break
-    if target_painting is None:
-        raise ValueError(f"No painting found with painting_id={painting_id}.")
-    # Locate contour
-    contours_list = target_painting["analysis"]["contours"]
-    index = None
-    for i, c in enumerate(contours_list):
-        if c["contour_id"] == contour_id:
-            index = i
-            break
-    if index is None:
-        raise ValueError(f"No contour with contour_id={contour_id} found in painting_id={painting_id}.")
-    # Keep the old contour_id
-    new_data_to_store = {
-        "contour_id": contour_id
-    }
-    # Merge with new_contour_data
-    new_data_to_store.update(new_contour_data)
-    # Overwrite the old contour
-    contours_list[index] = new_data_to_store
-    # Convert arrays
-    data = convert_ndarray(data)
-    # Safe write
-    safe_write_json(data, json_filepath)
-    return True
 
 
-def delete_contour(painting_id: int, contour_id: int, json_filepath="C:/Users/pepel/PROJECTS/DATA/Caravaggio/caravaggio.json"):
-    """
-    Remove the contour with the given 'contour_id' from the painting's
-    'analysis["contours"]' list.
-    """
-    with open(json_filepath, 'r') as f:
-        data = json.load(f)
-    # Locate painting
-    target_painting = None
-    for painting in data["paintings"]:
-        if painting["painting_id"] == painting_id:
-            target_painting = painting
-            break
-    if target_painting is None:
-        raise ValueError(f"No painting found with painting_id={painting_id}.")
-    # Locate and remove the contour
-    contours_list = target_painting["analysis"]["contours"]
-    old_length = len(contours_list)
-    new_contours = [c for c in contours_list if c["contour_id"] != contour_id]
-    if len(new_contours) == old_length:
-        raise ValueError(f"No contour with contour_id={contour_id} found in painting_id={painting_id}.")
-    # Overwrite with the filtered list
-    target_painting["analysis"]["contours"] = new_contours
-    # Convert arrays
-    data = convert_ndarray(data)
-    # Safe write
-    safe_write_json(data, json_filepath)
-    return True
 
-def show_painting_summary(painting_id, json_filepath="C:/Users/pepel/PROJECTS/DATA/Caravaggio/caravaggio.json"):
-    with open(json_filepath, 'r') as f:
-        data = json.load(f)
-    target_painting = None
-    for painting in data["paintings"]:
-        if painting["painting_id"] == painting_id:
-            target_painting = painting
-            break
-    if not target_painting:
-        print(f"No painting found with painting_id={painting_id}.")
-        return
-    print(f"Painting ID: {target_painting['painting_id']} — {target_painting['title']} ({target_painting['location']})")
-    contours_list = target_painting["analysis"]["contours"]
-    print(f"Number of contours: {len(contours_list)}")
-    for c in contours_list:
-        c_id = c["contour_id"]
-        c_type = c.get("contour_type", "N/A")  # 'N/A' if none specified
-        c_person = c.get("belongs_to_person", "N/A")  # 'N/A' if none specified
-        print(f"  • contour_id={c_id}, contour_type={c_type}, belongs_to_person={c_person}")
+
+
 
 def vis_light_estimation_C(
     img_path,
@@ -1507,67 +1218,6 @@ def plot_painting_contours_C(
     ax.axis('off')
     plt.show()
 
-def vis_global_light_estimation_C(img_path, direction, x_coordinates, y_coordinates, angle_std_degs=None, scale=1000, visual_factor = 2.0, plot_Ld=True, plot_contours_flag=False, plot_only_contours=False):
-    fig, ax = plt.subplots()
-    fig.patch.set_facecolor('black')
-    ax.set_facecolor('black')
-    org_img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
-    if org_img is None:
-        raise ValueError(f"Could not read image from {img_path}")
-    ax.imshow(
-        org_img,
-        cmap='gray',
-        alpha=0.7,
-        extent=[0, org_img.shape[1], org_img.shape[0], 0]
-    )
-    img_center = (org_img.shape[1] // 2, org_img.shape[0] // 2)
-    if plot_only_contours:
-        ax.plot(x_coordinates, y_coordinates, '.', markersize=4, color='green')
-    else:
-        # Possibly plot contour points
-        if plot_contours_flag:
-            ax.plot(x_coordinates, y_coordinates, '.', markersize=2, color='green')
-        # 4) Light direction arrow
-        if plot_Ld and direction is not None:
-            center_x = img_center[0]
-            center_y = img_center[1]
-            dx = direction[0] * scale
-            dy = direction[1] * scale
-            # draw the arrow
-            ax.arrow(
-                center_x,
-                center_y,
-                dx,
-                dy,
-                head_width=30,
-                head_length=30,
-                width=6,
-                fc='yellow',
-                ec='yellow',
-                zorder=5
-            )
-            angle_degs = np.degrees(np.arctan2(direction[1], direction[0]))
-            if  angle_std_degs is not None:
-                enlarged_std = angle_std_degs * visual_factor
-                angle_min = angle_degs - enlarged_std
-                angle_max = angle_degs + enlarged_std
-                # Make a wedge spanning [angle_min, angle_max] in degrees
-                # with radius=scale (or you can pick a different radius).
-                wedge = Wedge(
-                    (center_x, center_y),  # center
-                    scale,                 # radius
-                    angle_min,
-                    angle_max,
-                    color='yellow',
-                    alpha=0.2,
-                    zorder=4
-                )
-                ax.add_patch(wedge)
-    # 6) Axes limits & flip y-axis to match image coords
-    ax.set_xlim([-0.1 * org_img.shape[1], 1.1 * org_img.shape[1]])
-    ax.set_ylim([1.1 * org_img.shape[0], -0.1 * org_img.shape[0]])  # invert y
-    ax.axis('off')  # Hide axes & ticks
-    plt.show()
 
 def compute_angle_range(normals):
     angles = np.arctan2(normals[:, 1], normals[:, 0])
@@ -1911,7 +1561,7 @@ def sanity_check_luminance(
     # normalize image for display
     gray = gray_image.astype(np.float32)
     # pick out this vertex
-    px, py        = new_points_x[idx], new_points_y[idx]
+    px, py        = x[idx], y[idx]
     nx, ny        = normals[idx]
     # call the shared helper
     I0_chk, s_v, I_v = _extrapolate_I0(gray, px, py, nx, ny, R_in_px= R_in_px,delta = delta,method= method,poly_degree = poly_degree,amplitude_min = amplitude_min)
@@ -2039,7 +1689,7 @@ def plot_true_contour(
     fig = plt.figure(figsize=(14, 5))
     # left pane – image, coarse edge & sampling line
     ax0 = fig.add_subplot(1, 2, 1)
-    ax0.imshow(gray_image)
+    ax0.imshow(gray_image, cmap='gray')
     ax0.contour(coarse_edge, levels=[0.5], colors='cyan', linewidths=0.5,
                 alpha=.6, linestyles='dashed', antialiased=True)
     ax0.plot(rc[:,1], rc[:,0], 'b.', ms=3, label='Gradient samples')
@@ -2061,3 +1711,106 @@ def plot_true_contour(
     ax1.legend(fontsize=7)
     plt.tight_layout()
     plt.show()
+
+def vis_contour_light_estimations(data, painting_id, img_path,
+                                  scale=500,
+                                  plot_contours=True,
+                                  plot_arrows=True,
+                                  show_uncertainty=True,
+                                  uncertainty_factor=1.0,
+                                  save_fig=False,
+                                  dark_bg=False):
+    # 1) Find painting
+    painting = next((p for p in data["paintings"]
+                     if p["painting_id"] == painting_id), None)
+    if painting is None:
+        raise ValueError(f"painting_id={painting_id} not found")
+    # 2) Load image
+    img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        raise ValueError(f"Could not load image at {img_path}")
+    h, w = img.shape
+    # 3) Setup figure
+    fig, ax = plt.subplots()
+    if dark_bg:
+        bg = 'black'
+    else:
+        bg = 'white'
+    fig.patch.set_facecolor(bg)
+    ax.set_facecolor(bg)
+    fig.patch.set_facecolor(bg)
+    ax.set_facecolor(bg)
+    ax.imshow(img, cmap='gray', alpha=1, extent=[0, w, h, 0])
+    contours = painting.get("analysis", {}).get("contours", [])
+    n = len(contours)
+    if n == 0:
+        print("No contours to display")
+        return
+    cmap = colormaps['Set1']
+    for i, c in enumerate(contours):
+        raw = c["contour_coordinates"]
+        pts = []
+        for seg in raw:
+            if isinstance(seg, (list, tuple)) and seg:
+                if isinstance(seg[0], (list, tuple)):
+                    pts.extend(seg)
+                elif len(seg) == 2 and all(isinstance(v, (int, float)) for v in seg):
+                    pts.append(seg)
+        coords_all = np.array(pts, dtype=float)
+        color = cmap(i % cmap.N)
+        # Plot each segment as a smooth line
+        if plot_contours:
+            for seg in raw:
+                # seg could be list of points [[x,y],...]
+                if isinstance(seg, (list, tuple)) and seg and isinstance(seg[0], (list, tuple)):
+                    coords = np.array(seg, dtype=float)
+                    ax.plot(coords[:,0], coords[:,1], '-', color=color, linewidth=1)
+        ld_list = c.get("light_direction_estimation", [])
+        if not plot_arrows or not isinstance(ld_list, list) or len(ld_list)==0:
+            continue
+        first = ld_list[0]
+        if not (isinstance(first, (list,tuple)) and len(first)==2):
+            continue
+        dx, dy = first
+        # Centroid in image coords
+        cx, cy = coords_all.mean(axis=0)
+        ax.arrow(cx, cy,
+                 dx*scale, dy*scale,
+                 head_width=15, head_length=15, width=2,
+                 length_includes_head=True,
+                 fc=color, ec=color, zorder=5)
+        # Uncertainty cone
+        if show_uncertainty:
+            # Extract std_deg (unwrap list if needed)
+            std = c.get("empirical_std_deg", 0)
+            if isinstance(std,(list,tuple)) and len(std)==1:
+                std = std[0]
+            # Angle of arrow in degrees (0° → +x, increasing ccw)
+            angle = (np.degrees(np.arctan2(dy, dx)) + 360) % 360
+            # Cone spans ± (std * factor)
+            delta = std * uncertainty_factor
+            wedge = Wedge(
+                (cx, cy),             # center
+                scale,                # radius = same as arrow length
+                angle - delta,        # start angle
+                angle + delta,        # end angle
+                color=color, alpha=0.1, zorder=4
+            )
+            ax.add_patch(wedge)
+    ax.set_xlim(-0.05*w, 1.05*w)
+    ax.set_ylim(1.05*h, -0.05*h)
+    ax.axis('off')
+    plt.show()
+    if save_fig:
+        # Vector PDF (perfectly scalable)
+        pdf_name = f"painting_{painting_id}_contours.pdf"
+        fig.savefig(pdf_name,
+                    format="pdf",
+                    bbox_inches="tight")
+        # High-res PNG fallback
+        png_name = f"painting_{painting_id}_contours.png"
+        fig.savefig(png_name,
+                    format="png",
+                    dpi=600,
+                    bbox_inches="tight")
+        print(f"Saved {pdf_name} and {png_name}")
