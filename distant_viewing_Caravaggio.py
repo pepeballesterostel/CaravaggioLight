@@ -21,34 +21,73 @@ with open(json_filepath, 'r') as f:
 
 ##############################################################################
 # Variables to change
-painting_id = 38
-url = data['paintings'][painting_id-1]['url']           
+painting_id = 17
+# url = data['paintings'][painting_id-1]['url']           
 
 parent_dir = 'C:/Users/pepel/PROJECTS/DATA/Caravaggio/images'
-img_filename = str(painting_id) + '.jpg'
-# img_filename = 'obliquelight.png'
+# img_filename = str(painting_id) + '.jpg'
+img_filename = 'bhim00037016.jpg'
 img_path = os.path.join(parent_dir, img_filename)
 image = cv2.imread(img_path)
 gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-utils_C.show_painting_summary(painting_id)
+utils_C.show_painting_summary(painting_id, json_filepath=json_filepath)
 
 ##############################################################################
 # EXTRACT CONTOURS
 ##############################################################################
 # Single contour
 contour0 = utils_C.extract_contour_ui(image_rgb)
+contour1 = utils_C.extract_contour_ui(image_rgb)
+contour2 = utils_C.extract_contour_ui(image_rgb)
+contour3 = utils_C.extract_contour_ui(image_rgb)
+contour4 = utils_C.extract_contour_ui(image_rgb)
+contour5 = utils_C.extract_contour_ui(image_rgb)
+contour6 = utils_C.extract_contour_ui(image_rgb)
+contour7 = utils_C.extract_contour_ui(image_rgb)
+contour8 = utils_C.extract_contour_ui(image_rgb)
+contour9 = utils_C.extract_contour_ui(image_rgb)
+
+contours = [contour0]
+
+def show_contour_zoom(img_rgb, contour_xy, pad=1000, marker_size=60,
+                      edge_color='lime', edge_width=1.8,
+                      save_path=None, dpi=300):
+    pts = np.asarray(contour_xy, dtype=float)
+    xs, ys = pts[:, 0], pts[:, 1]
+    xmin, xmax = xs.min(), xs.max()
+    ymin, ymax = ys.min(), ys.max()
+    fig_w = (xmax - xmin + 2 * pad) / 250
+    fig_h = (ymax - ymin + 2 * pad) / 250
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
+    ax.imshow(img_rgb)
+    ax.scatter(xs, ys,
+               s=marker_size, facecolors='none',
+               edgecolors=edge_color, linewidths=edge_width)
+    ax.set_xlim(xmin - pad, xmax + pad)
+    ax.set_ylim(ymax + pad, ymin - pad)  # imshow y-axis is inverted
+    ax.set_axis_off()
+    plt.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=dpi, bbox_inches='tight', pad_inches=0)
+        plt.close(fig)
+    else:
+        plt.show()
+        plt.close(fig)
+
+show_contour_zoom(image_rgb, contour0, pad=100, marker_size=20, edge_color='red', save_path="zoomed_contour.png")
 
 # Multiple contour
 utils_C.show_painting_summary(painting_id)
-contour_ids=[1,2,3,4]
+contour_ids=[1,2,3,4,5]
 contours, smooth_vals, N_vals = utils_C.get_contour_info_by_id(data, painting_id=painting_id, contour_ids=contour_ids)
-# contours = contours + [contour0]
-
+contours = [contours[0]]
+smooth_vals = [7]
+N_vals = [N_vals[0]]
 ##############################################################################
 # EXTRACT NORMALS
 ##############################################################################
-smooth_vals = [5]*len(contours)  # smoothness for each contour
+smooth_vals = [30]*len(contours)  # smoothness for each contour
 N_vals = [5]*len(contours)
 
 all_spline_x: List[Any] = []
@@ -61,9 +100,68 @@ for contour, smoothness in zip(contours, smooth_vals):
     all_spline_y.append(spline_y)
     all_normals.append(normals)
 
-utils_C.plot_contour_and_normals(img_path, all_spline_x,all_spline_y,all_normals,arrow_scale=50, point_size=2)
+utils_C.plot_contour_and_normals(img_path, all_spline_x,all_spline_y,all_normals,arrow_scale=200, point_size=4)
+
+def plot_contour_and_normals_zoom(
+        img_path: str,
+        x_in, y_in,             # either 1-D array  *or* list of arrays
+        normals_in,             # (N,2) array  *or* list of arrays
+        arrow_scale: float = 50,
+        point_size: int = 2,
+        pad: int = 1000,
+        save_path: str = None
+    ):
+    # ---- 1. transparently allow single arrays or lists ------------------
+    if isinstance(x_in, (list, tuple)):
+        x = np.concatenate(x_in).astype(np.float32)
+        y = np.concatenate(y_in).astype(np.float32)
+        N = np.vstack(normals_in).astype(np.float32)
+    else:
+        x = np.asarray(x_in, dtype=np.float32)
+        y = np.asarray(y_in, dtype=np.float32)
+        N = np.asarray(normals_in, dtype=np.float32)
+    # ---- 2. load grayscale image ---------------------------------------
+    img_arr = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
+    if img_arr is None:
+        raise FileNotFoundError(f"Image not found: {img_path}")
+    h, w = img_arr.shape
+    # ---- 3. define zoom window based on contour ------------------------
+    xmin, xmax = x.min(), x.max()
+    ymin, ymax = y.min(), y.max()
+    fig_w = (xmax - xmin + 2 * pad) / 250
+    fig_h = (ymax - ymin + 2 * pad) / 250
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
+    # ---- 4. plot base image --------------------------------------------
+    ax.imshow(img_arr, cmap='gray', extent=[0, w, h, 0])
+    # ---- 5. plot points and normals ------------------------------------
+    ax.scatter(x, y, c='red', s=point_size)
+    for xi, yi, (nx, ny) in zip(x, y, N):
+        ax.arrow(xi, yi, nx * arrow_scale, ny * arrow_scale,
+                 color='skyblue', head_width=3, length_includes_head=True)
+    # ---- 6. Zoom and clean ---------------------------------------------
+    ax.set_xlim(xmin - pad, xmax + pad)
+    ax.set_ylim(ymax + pad, ymin - pad)
+    ax.axis('off')
+    plt.tight_layout()
+    # ---- 7. Save or Show -----------------------------------------------
+    if save_path:
+        fig.savefig(save_path, dpi=300, bbox_inches='tight', pad_inches=0)
+        plt.close(fig)
+    else:
+        plt.show()
+        plt.close(fig)
 
 
+plot_contour_and_normals_zoom(
+    img_path,
+    all_spline_x,
+    all_spline_y,
+    all_normals,
+    arrow_scale=100,
+    point_size=5,
+    pad=100,
+    save_path='normals.png'  # or omit to just show the image
+)
 ##############################################################################
 # EXTRACT TRUE CONTOUR AT SUB-PIXEL LEVEL
 ##############################################################################
@@ -84,6 +182,9 @@ for spline_x, spline_y, normals in zip(all_spline_x, all_spline_y, all_normals):
     all_new_points_x.append(new_x)
     all_new_points_y.append(new_y)
 
+utils_C.plot_contour_and_normals(img_path, all_new_points_x, all_new_points_y, all_normals,arrow_scale=100, point_size=7)
+
+
 ##############################################################################
 # EXTRACT TRUE LUMINANCE AT SUB-PIXEL LEVEL
 ##############################################################################
@@ -94,7 +195,7 @@ for new_x, new_y, normals in zip(all_new_points_x, all_new_points_y, all_normals
         new_x,
         new_y,
         normals,
-        R_in_px=4.0,
+        R_in_px=2.0,
         delta=0.25,
         method="erf"
     )
@@ -121,6 +222,13 @@ for new_x, new_y, normals, I_true in zip(
     filtered_normals_list.append(filtered_normals)
     filtered_I_true_list.append(filtered_I_true)
 
+
+sanity_check_luminance(
+    gray_image,
+    filtered_new_points_x_list[0],
+    filtered_new_points_y_list[0],
+    filtered_normals_list[0],
+    idx= 50)  
 
 ##############################################################################
 # EXTRACT LIGT DIRECTION ESTIMATION AND EMPIRICAL STANDARD DEVIATION
@@ -151,14 +259,17 @@ stacked_normals = np.vstack(filtered_normals_list)
 stacked_I_true = np.concatenate(filtered_I_true_list)
 # -----------------------------------------------------------------------------#
 ####
-# gt_light_direction_estimation = np.array([-0.89, -0.45])
-# ground_truth_light = gt_light_direction_estimation @ normals.T
+gt_light_direction_estimation = np.array([-0.89, -0.45])
+ground_truth_light = gt_light_direction_estimation @ normals.T
 theoretical_light = np.clip(stacked_normals @ light_direction_estimation, 0, 1)
 
 I_true_norm = utils_C.normalize_to_01(stacked_I_true)
 I_theo_norm = utils_C.normalize_to_01(theoretical_light)
-# I_gt_norm   = utils.normalize_to_01(ground_truth_light)
-
+I_gt_norm   = utils_C.normalize_to_01(ground_truth_light)
+light_rad = np.mod(np.arctan2(-light_direction_estimation[1],
+                              light_direction_estimation[0]),
+                   2*np.pi)
+light_deg = np.degrees(light_rad)
 # plot luminance distributions against angle
 kx, ky = stacked_normals[:, 0], stacked_normals[:, 1]
 angles_rad = np.mod(np.arctan2(-ky, kx), 2*np.pi)          
@@ -166,19 +277,42 @@ angles_deg = np.degrees(angles_rad)
 order      = np.argsort(angles_deg)
 θ_sorted   = angles_deg[order]
 I_theo_s   = I_theo_norm[order]
-# I_gt_s     = I_gt_norm[order]
+I_gt_s     = I_gt_norm[order]
 
 plt.figure(figsize=(6, 3))
 # noisy measurement → scatter
-plt.scatter(angles_deg, I_true_norm, s=14, alpha=0.6, label='measured')
+plt.scatter(angles_deg, I_true_norm, s=14, alpha=0.6, label='Measured intensity')
 # theoretical & ground-truth Lambertian → lines
-plt.plot(θ_sorted, I_theo_s, lw=1.4, label='ground-truth Lambertian')
-plt.xlabel('surface-normal angle θ  (deg)')
+plt.plot(θ_sorted, I_theo_s, lw=1.4, label='Lambertian distribution')
+plt.plot(θ_sorted, I_gt_s, lw=1.4, label='Ground truth distribution')
+plt.axvline(light_deg,
+            color='red',
+            linestyle='--',
+            linewidth=1.5,
+            label='Light direction estimation')
+
+plt.xlabel('surface-normal angle θ (deg)')
 plt.ylabel('luminance (normalised)')
 plt.legend(frameon=False)
 plt.tight_layout()
 plt.show()
 
+##############################################################################
+# PLOT THE LIGHT DIRECTION ESTIMATION
+##############################################################################
+
+plot_single_contour_light(
+    img_path,
+    contours,
+    light_direction_estimation,
+    average_std_deg,
+    scale=700,    
+    bg='white',
+    save_fig=False,
+)
+
+              
+              
 ##############################################################################
 # EXTRACT REST OF THE METRICS
 ##############################################################################
@@ -228,8 +362,8 @@ coefficients_reg = utils_C.compute_sh_coefficients(stacked_normals, norm_smoothe
 ##############################################################################
 # SAVE THE CONTOUR DATA TO JSON
 ##############################################################################
-contour_type = "fruit"
-belongs_to_person = "no"
+contour_type = "person"
+belongs_to_person = "person 12"
 
 contour_data = {    
     "contour_coordinates": contours,
@@ -253,15 +387,15 @@ contour_data = {
 }
 
 # ADD THE CONTOUR DATA TO THE JSON FILE
-utils_C.add_contour(painting_id, contour_data)
+utils_C.add_contour(painting_id, contour_data, json_filepath)
 
-utils_C.show_painting_summary(painting_id)
+utils_C.show_painting_summary(painting_id, json_filepath)
 
 # UPDATE CONTOUR DATA BY ID
-utils_C.replace_contour(painting_id=painting_id, contour_id=6, new_contour_data = contour_data)
+utils_C.replace_contour(painting_id=painting_id, contour_id=6, new_contour_data = contour_data, json_filepath=json_filepath)
 
 # # DELETE CONTOUR DATA BY ID
-utils_C.delete_contour(painting_id=painting_id, contour_id=3)
+utils_C.delete_contour(painting_id=painting_id, contour_id=1, json_filepath=json_filepath)
 
 ##############################################################################
 # EXTRACT LIGHT DIRECTION DEPICTED EVIDENCE: CAST SHADOWS OR SPECULAR HIGHLIGHTS
@@ -300,4 +434,4 @@ utils_C.add_remaining_global_info(painting_id, global_light_direction_estimation
 ##############################################################################
 # VISUALIZE THE CONTOUR LIGHT ESTIMATIONS
 ##############################################################################
-utils_C.vis_contour_light_estimations(data, painting_id, img_path, scale=400, save_fig=False)
+vis_contour_light_estimations(data, painting_id, img_path, scale=250, color = 'Set3',save_fig=True)
